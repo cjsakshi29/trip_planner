@@ -1,12 +1,8 @@
 import streamlit as st
 import os
-from dotenv import load_dotenv
 import requests
-import base64
-
-from langchain.agents import initialize_agent, AgentType
+from dotenv import load_dotenv
 from langchain.tools import Tool
-from langchain.chat_models import ChatOpenAI
 
 from tools import get_weather, get_forecast, get_flights, get_hotels
 
@@ -14,28 +10,10 @@ load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# ---------------- LLM SETUP ----------------
-llm = ChatOpenAI(
-    openai_api_key=OPENROUTER_API_KEY,
-    openai_api_base="https://openrouter.ai/api/v1",
-    model_name="meta-llama/llama-3-8b-instruct",
-    temperature=0.7
-)
-
-# ---------------- DEFINE TOOLS ----------------
-tools = [
-    Tool(name="Current Weather", func=get_weather, description="Get current weather"),
-    Tool(name="Weather Forecast", func=get_forecast, description="Get 5-day forecast"),
-    Tool(name="Flight Options", func=get_flights, description="Get flight details"),
-    Tool(name="Hotel Options", func=get_hotels, description="Get hotel details"),
-]
-
-agent = initialize_agent(tools, llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=False)
-
-# ---------------- STREAMLIT UI ----------------
+# ----------- PAGE CONFIG -----------
 st.set_page_config(page_title="AI Trip Planner", layout="wide")
 
-st.title("🌍 AI Trip Planner Agent (LangChain Powered)")
+st.title("🌍 AI Trip Planner Agent")
 
 prompt = st.text_input("Enter your trip request")
 
@@ -45,21 +23,72 @@ if st.button("Plan Trip"):
 
         with st.spinner("Generating trip plan..."):
 
-            result = agent.run(
-                f"""
-                {prompt}
+            # Extract city
+            try:
+                city = prompt.split("to")[1].split("in")[0].strip()
+            except:
+                city = prompt
 
-                Provide:
-                1 paragraph about city's cultural & historical significance.
-                Include current weather.
-                Include forecast during travel.
-                Include flight options.
-                Include hotel options.
-                Include day-wise itinerary.
-                """
-            )
+            # Call tools
+            weather = get_weather(city)
+            forecast = get_forecast(city)
+            flights = get_flights(city)
+            hotels = get_hotels(city)
 
-        st.markdown(result)
+            # Combine tool outputs
+            combined_data = f"""
+            {weather}
+
+            {forecast}
+
+            {flights}
+
+            {hotels}
+            """
+
+            # Call OpenRouter LLM directly
+            url = "https://openrouter.ai/api/v1/chat/completions"
+
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:8501",
+                "X-Title": "Trip Planner"
+            }
+
+            final_prompt = f"""
+            {prompt}
+
+            Here is real-time data:
+
+            {combined_data}
+
+            Using this data:
+            - Write one paragraph about cultural significance.
+            - Suggest travel dates.
+            - Include the above weather.
+            - Include forecast during trip.
+            - Include flight options.
+            - Include hotel options.
+            - Provide day-wise itinerary.
+            """
+
+            data = {
+                "model": "meta-llama/llama-3-8b-instruct",
+                "messages": [
+                    {"role": "user", "content": final_prompt}
+                ]
+            }
+
+            response = requests.post(url, headers=headers, json=data)
+            result = response.json()
+
+            if response.status_code == 200:
+                trip_text = result["choices"][0]["message"]["content"]
+            else:
+                trip_text = "Error generating response."
+
+        st.markdown(trip_text)
 
     else:
-        st.warning("Please enter a trip request.")
+        st.warning("Please enter a prompt.")
